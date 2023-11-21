@@ -8,15 +8,18 @@
 #include <fstream>
 #include <thread>
 
-#define MAX_BMs  15;
-#define maxBMs  5;
-#define STEP_T  0.5;
-#define MAX_DIST  5;
-#define MIN_US  5;
-#define MAX_US  89;
-#define MAX_DELAY 2;
+#define MAX_BMs 15
+#define maxBMs 5
+#define STEP_T 0.5
+#define MAX_DIST 5
+#define MIN_US 5
+#define MAX_US 89
+#define MAX_DELAY 2
 #define G 9.8
 #define PI 3.1415
+#define TimeStep 1
+
+std::condition_variable cv;
 
 
 struct tPoint {
@@ -331,6 +334,7 @@ public:
             ft = new ParabolicModel(tasks.size() + 1, p_type, p_t0, p_angle, p_launch, p_boom);
         } else {
             Singleton::self<LoggerBMs>().log(ERROR,tasks.size() + 1, p_launch, -1,  " TYPE IS UNACCESSIBLE");
+            return NULL;
         }
         
         if (ft != nullptr) {
@@ -340,17 +344,89 @@ public:
         return ft;
     }
 
-    //!
+    
     int prepare(tStrike& p_strike) {
         for (const auto& ft : tasks) {
             IBmElement* e = elements.insert( { ft.second->id(), new tElement(ft.second) } ).first->second;
             
-            if(e->launchPoint().x > e->boomPoint().x)
+            if(e->launchPoint().x > e->boomPoint().x){
                 Singleton::self<LoggerBMs>().log(ERROR, ft.second->id(), e->launchPoint(), -1, "launchPoint > boomPoint");
-            
+                return -1;
+            }
             std::vector<int> v;
             v.push_back(ft.second->id());
             p_strike[ft.second->id()] = v;
+            
+            double launchtime = e->launchTime();
+            double boomtime = e->boomTime();
+            if(minlaunchtime > launchtime)
+                minlaunchtime = launchtime;
+            if(maxboomtime < boomtime)
+                maxboomtime = boomtime;
+            BMlimits[launchtime] += 1;
+            BMlimits[boomtime] -= 1;
+            for (double t = launchtime, tE = boomtime; t < tE; t += 1.0) {
+                // заполнить таблицу (собственную или в IBmElement) с опорными значениями для интерполяции
+                e->positionAt(t);
+            }
+            // проверить, что для момента e->boomTime() данные тоже посчитаны
+            e->positionAt(boomtime);
+
+            if(false){
+                Singleton::self<LoggerWork>().log(ERROR, " WRONG TIME TABLE");
+                return -1;
+            }
+        }
+        //проверка контрактных ограничений
+        int sum = 0;
+        for (const auto& it : BMlimits){
+            sum += it.second;
+            if(sum > Config::self().premittedBMs()){
+                Singleton::self<LoggerWork>().log(ERROR, " TOO MUCH BMs");
+                return -1;
+            }
+        }
+
+        return 0;
+    } 
+
+    // int prepare(tStrike& p_strike) {
+    //     std::vector<std::thread> vecOfThreads;
+    //     int i = 0;
+    //     for (auto ft = tasks.begin(); ft != tasks.end(); ++ft) {
+    //         IFlightTask* temp = ft->second;
+    //         vecOfThreads.push_back(std::thread(
+    //         [this, &p_strike, temp]()
+    //         {this->preparetask(temp, p_strike);
+    //         })
+    //         );
+    //     }
+
+
+    //     for(auto it = vecOfThreads.begin(); it != vecOfThreads.end(); ++it){
+    //         it->join();
+    //     }
+         //проверка контрактных ограничений
+    //     int sum = 0;
+    //     for (const auto& it : BMlimits){
+    //          sum += it.second;
+    //          if(sum > Config::self().premittedBMs()){
+    //              Singleton::self<LoggerWork>().log(ERROR, " TOO MUCH BMs");
+    //                return -1;
+    //     }
+
+    // return 0;
+    // }
+
+    void preparetask(IFlightTask* ft, tStrike &p_strike){
+        IBmElement* e = elements.insert( { ft->id(), new tElement(ft) } ).first->second;
+            
+            if(e->launchPoint().x > e->boomPoint().x)
+                Singleton::self<LoggerBMs>().log(ERROR, ft->id(), e->launchPoint(), -1, "launchPoint > boomPoint");
+            
+            std::vector<int> v;
+            v.push_back(ft->id());
+            p_strike[ft->id()] = v;
             
             double launchtime = e->launchTime();
             double boomtime = e->boomTime();
@@ -369,78 +445,18 @@ public:
 
             if(false){
                 Singleton::self<LoggerWork>().log(ERROR, " WRONG TIME TABLE");
-                return -1;
             }
-        }
-        //проверка контрактных ограничений
-        int sum = 0;
-        for (const auto& it : BMlimits){
-            sum += it.second;
-            if(sum > Config::self().premittedBMs())
-                Singleton::self<LoggerWork>().log(ERROR, " TOO MUCH BMs");
-        }
+    }
 
-        return 0;
-    } 
 
-    // int prepare(tStrike& p_strike) {
-    //     std::vector<std::thread> vecOfThreads;
-    //     //vecOfThreads.push_back(std::thread(preparetask));
-    //     for (const auto& ft : tasks) {
-    //         std::thread th1(preparetask, ft, p_strike);
-    //         std::thread th2(preparetask, ++ft, p_strike);
-    //         std::thread th3(preparetask, ++ft, p_strike);
-    //         std::thread th4(preparetask, ++ft, p_strike);
-    //     }
-    //      //проверка контрактных ограничений
-    //     int sum = 0;
-    //     for (const auto& it : BMlimits){
-    //          sum += it.second;
-    //          if(sum > Config::self().premittedBMs())
-    //              Singleton::self<LoggerWork>().log(ERROR, " TOO MUCH BMs");
-    //     }
 
-    // return 0;
-    // }
-
-    // void preparetask(const std::pair<const int, IFlightTask *> &ft, tStrike& p_strike){
-    //     IBmElement* e = elements.insert( { ft.second->id(), new tElement(ft.second) } ).first->second;
-            
-    //         if(e->launchPoint().x > e->boomPoint().x)
-    //             Singleton::self<LoggerBMs>().log(ERROR, ft.second->id(), e->launchPoint(), -1, "launchPoint > boomPoint");
-            
-    //         std::vector<int> v;
-    //         v.push_back(ft.second->id());
-    //         p_strike[ft.second->id()] = v;
-            
-    //         double launchtime = e->launchTime();
-    //         double boomtime = e->boomTime();
-    //         if(minlaunchtime > launchtime)
-    //             minlaunchtime = launchtime;
-    //         if(maxboomtime < boomtime)
-    //             maxboomtime = boomtime;
-    //         BMlimits[launchtime] = 1;
-    //         BMlimits[boomtime] = -1;
-    //         for (double t = launchtime, tE = boomtime; t < tE; t += 1.0) {
-    //             // заполнить таблицу (собственную или в IBmElement) с опорными значениями для интерполяции
-    //             e->positionAt(t);
-    //         }
-    //         // проверить, что для момента e->boomTime() данные тоже посчитаны
-    //         e->positionAt(boomtime);
-
-    //         if(false){
-    //             Singleton::self<LoggerWork>().log(ERROR, " WRONG TIME TABLE");
-    //         }
-    // }
-
-    //!
     tPoint positionOf(int p_id, double p_time) {
         if(elements[p_id]->launchTime() >= p_time)
             return elements[p_id]->launchPoint();
         if(elements[p_id]->boomTime() <= p_time)
             return elements[p_id]->boomPoint();
         tPoint x0 = elements[p_id]->getMapPosition(p_time); //return map(p_time) or map от меньше p_time
-        tPoint x1 = elements[p_id]->getMapPosition(p_time + 1);
+        tPoint x1 = elements[p_id]->getMapPosition(p_time + TimeStep);
         x0.x = x0.x + (x1.x - x0.x) * (p_time - elements[p_id]->getMapTime(p_time));
         x0.y = x0.y + (x1.y - x0.y) * (p_time - elements[p_id]->getMapTime(p_time));
         return x0;
@@ -454,6 +470,8 @@ public:
     }
 
     int waitForAll(){
+        //std::unique_lock<std::mutex> lk(mtxCV)
+        
         return 0;
     }
 
